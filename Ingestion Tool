@@ -4,6 +4,7 @@ import json
 import requests
 import time
 from pymongo import MongoClient
+from datetime import datetime
 
 # Connect to MongoDB
 client = MongoClient('mongodb://localhost:27017/')
@@ -46,12 +47,9 @@ def process_sql(file_path, pattern):
     pass
 
 # Function to process a single TXT file
-def process_txt_file(file_path, delimiter, pattern, chunk_size):
+def process_txt_file(file_path, delimiter, pattern, chunk_size, breach_date, source_name):
     documents = []  # List to store documents
     skipped = 0
-
-    # Find the breach date based on the source
-    breach_date = '2018-02-01'
 
     # Create a list to store skipped lines
     skipped_lines = []
@@ -74,7 +72,7 @@ def process_txt_file(file_path, delimiter, pattern, chunk_size):
                     record['password_hash'] = password
                 else:
                     record['password'] = password
-                record['source'] = pattern
+                record['source'] = source_name
                 record['domainName'] = domain_name
                 record['breach_date'] = breach_date
 
@@ -113,13 +111,13 @@ def process_txt_file(file_path, delimiter, pattern, chunk_size):
             saved_lines_file.write('\n'.join(skipped_lines))
 
 # Function to process a single file based on its extension
-def process_file(file_path, delimiter, pattern, chunk_size):
+def process_file(file_path, delimiter, pattern, chunk_size, breach_date, source_name):
     # Determine the file type based on the extension
     file_extension = os.path.splitext(file_path)[1].lower()
 
     # Check if the file size exceeds the maximum allowed
     if os.path.getsize(file_path) > max_file_size:
-        split_and_process_large_file(file_path, delimiter, pattern, chunk_size)
+        split_and_process_large_file(file_path, delimiter, pattern, chunk_size, breach_date, source_name)
     else:
         if file_extension == '.csv':
             # Process CSV file
@@ -132,12 +130,12 @@ def process_file(file_path, delimiter, pattern, chunk_size):
             process_sql(file_path, pattern)
         elif file_extension == '.txt':
             # Process TXT file
-            process_txt_file(file_path, delimiter, pattern, chunk_size)
+            process_txt_file(file_path, delimiter, pattern, chunk_size, breach_date, source_name)
         else:
             print(f"Unsupported file type: {file_extension}")
 
 # Function to split a large file into chunks and process each chunk
-def split_and_process_large_file(file_path, delimiter, pattern, chunk_size):
+def split_and_process_large_file(file_path, delimiter, pattern, chunk_size, breach_date, source_name):
     with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
         chunk_count = 0
         documents = []
@@ -153,9 +151,9 @@ def split_and_process_large_file(file_path, delimiter, pattern, chunk_size):
                     record['password_hash'] = password
                 else:
                     record['password'] = password
-                record['source'] = pattern
+                record['source'] = source_name
                 record['domainName'] = domain_name
-                record['breach_date'] = '2018-02-01'
+                record['breach_date'] = breach_date
 
                 documents.append(record)
 
@@ -197,15 +195,31 @@ if os.path.isdir(path):
         except Exception as e:
             print(f'Error renaming "{filename}": {e}')
 
+    # Get the current date
+    current_date = datetime.now().strftime('%Y-%m-%d')
+
+    # Prompt user for breach date
+    breach_date = input(f"Enter the breach date (default is '{current_date}'): ") or current_date
+
+    # Prompt user for source name
+    source_name = input("Enter the source name: ")
+
     # Iterate over files in the directory
     for filename in os.listdir(path):
         file_path = os.path.join(path, filename)
-        pattern = '2,844 Separate Data Breaches'.lower()
-        process_file(file_path, delimiter, pattern, chunk_size)
+        process_file(file_path, delimiter, source_name, chunk_size, breach_date, source_name)
 else:
+    # Get the current date
+    current_date = datetime.now().strftime('%Y-%m-%d')
+
+    # Prompt user for breach date
+    breach_date = input(f"Enter the breach date (default is '{current_date}'): ") or current_date
+
+    # Prompt user for source name
+    source_name = input("Enter the source name: ")
+
     # Process a single file
-    pattern = '2,844 Separate Data Breaches'.lower()
-    process_file(path, delimiter, pattern, chunk_size)
+    process_file(path, delimiter, source_name, chunk_size, breach_date, source_name)
 
 # Disconnect from MongoDB
 client.close()
