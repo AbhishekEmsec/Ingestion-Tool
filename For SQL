@@ -1,0 +1,153 @@
+import re
+import pymongo
+from pymongo import MongoClient
+import phonenumbers
+from passwordlib import util as pwutil
+from validate_email_address import validate_email
+
+
+client = MongoClient('mongodb://127.0.0.1:27017/')
+db = client['dehashedDb']
+collection = db['Test']
+
+file_path = './New folder/revupas_users Estoreko.com.sql'
+chunk_size = 10000
+tablename=''
+def print_tablename():
+    with open(file_path, 'r', encoding='latin-1') as file:
+        for line in file:
+            arr = line.split('(')
+            if arr:
+                get_table = line.split('(')[0]
+                if "CREATE TABLE" in get_table:
+                    print(get_table.strip())
+                    print(arr[1].strip())
+
+def get_table():
+    print_tablename()
+    tablename = input('Enter table name position: ')
+    read_lines_from_file(tablename)
+
+def read_lines_from_file(tablename):
+    with open(file_path, 'r', encoding='latin-1') as file:
+        users = []
+        email_position = 0
+        password_position = 0
+        flag = False
+        cnt = -1
+        email=''
+        password=''
+        new_arr=[]
+        for line in file:
+            arr = line.split('(')
+            # print(line)
+
+            if arr:
+                get_table = line.split('(')[0]
+                table = get_table.split(' ')
+                # print("table--",table[len(table)-3])
+
+                # print("gettable",get_table)
+
+                if "CREATE TABLE" in get_table and tablename in get_table:
+                    flag = True
+
+                if flag and cnt < 20:
+                    if "email" in line and email_position == 0:
+                        email_position = cnt
+
+                    if "password" in line and password_position == 0:
+                        password_position = cnt
+
+                    cnt += 1
+                if arr is not None and tablename in get_table:
+                    new_arr = arr[1].split(',') if len(arr) > 1 else []
+                else:
+                    if arr is not None and flag:
+                        new_arr = arr[1].split(',') if len(arr) > 1 else []
+
+                # print(new_arr)
+
+                if new_arr:
+
+                    for i in new_arr:
+                        # hashed = pwutil.hash_password(i)
+                        # tempass=(pwutil.extract_algorythm(hashed)) 
+                        # print(i)
+                        if is_valid_email(i):
+                            print("email-address",i)
+
+                        
+                        try:
+                            phone_number = phonenumbers.parse(i, None)  
+
+                        except Exception as e:
+                            # print(e)
+                            continue
+
+                        if phonenumbers.is_valid_number(phone_number):
+                            print(i)
+                           
+
+                        
+
+
+
+
+                # print("email--",email,"password--",password)
+                # print("newarr",new_arr)
+
+                # print("newarr",new_arr)
+                if flag:
+
+                    email = new_arr[email_position].strip() if len(new_arr) > email_position else None
+
+                    password = new_arr[password_position].strip() if len(new_arr) > password_position else None
+
+                if email and '@' in email:
+                    domain_name = email.split('@')[1]
+                else:
+                    continue
+
+                base_obj = {
+                    "id": "",
+                    "username": "",
+                    "email": email,
+                    "password": password if password and len(password) < 16 else "",
+                    "password_hash": password if password and len(password) > 16 else "",
+                    "name": "",
+                    "dob": "",
+                    "phone": "",
+                    "address": "",
+                    "source": "wattpad.com",
+                    "domainName": domain_name,
+                    "breach_date": "June 2020",
+                    "others": "",
+                }
+
+                users.append(base_obj)
+
+                if len(users) >= chunk_size:
+                    insert_users(users)
+                    users.clear()
+
+        if users:
+            insert_users(users)
+            print('User data inserted successfully.')
+        else:
+            print('No user data found in the file.')
+
+def insert_users(users):
+    collection.insert_many(users)
+
+def is_valid_email(email):
+    return validate_email(email)
+
+def main():
+    try:
+        get_table()
+    finally:
+        client.close()
+
+if name == "main":
+    main()
