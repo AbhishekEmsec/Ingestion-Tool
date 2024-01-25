@@ -1,0 +1,140 @@
+import os
+import pandas as pd
+from pymongo import MongoClient
+import hashlib
+import json
+
+# Connect to MongoDB
+client = MongoClient('mongodb://localhost:27017/')
+db = client['Database_Leaks']
+collection = db['2,844 Separate Data Breaches12']
+
+# Define the base schema
+base_obj = {
+    "id": "",
+    "username": "",
+    "email": "",
+    "password": "",
+    "password_hash": "",
+    "name": "",
+    "dob": "",
+    "phone": "",
+    "address": "",
+    "source": "",
+    "breach_date": "",
+    "domainName": "",
+    "others": ""
+}
+
+# Function to transform CSV data to match the base schema
+def transform_csv_data(row):
+    # Ensure that the values are converted to strings before concatenation
+    fname = str(row.get("Name", ""))
+    lname = ""  # Adjust based on your CSV data structure
+
+    # Use the value of "email_lower_sha256" for hashing passwords
+    email_lower_sha256 = hashlib.sha256(str(row.get("Email", "")).lower().encode()).hexdigest()
+    password_hash = hashlib.sha256(email_lower_sha256.encode()).hexdigest()
+
+    # Additional checks for fields in CSV data
+    dob = str(row.get("Date of Birth", ""))
+    phone = str(row.get("Phone", ""))
+    address = f"{row.get('Street Address', '')}, {row.get('City', '')}, {row.get('State/Province', '')} {row.get('ZIP', '')}"
+    gender = str(row.get("Gender", ""))
+    ip = ""  # Adjust based on your CSV data structure
+
+    transformed_data = {
+        "id": str(row.get("ID", "")),
+        "username": (fname + lname).lower(),
+        "email": str(row.get("Email", "")),
+        "password": "",  # You may need to generate or set a default password
+        "password_hash": password_hash,
+        "name": f"{fname} {lname}",
+        "dob": dob,
+        "phone": phone,
+        "address": address,
+        "source": "",
+        "breach_date": "",
+        "domainName": "",
+        "others": {
+            "ip": ip,
+            "email_lower_sha256": email_lower_sha256,
+            "gender": gender,
+            # Add more fields as needed
+        }
+    }
+    return transformed_data
+
+# Function to process a single CSV file
+def process_csv(file_path, delimiter, breach_date, source_name, chunk_size):
+    documents = []  # List to store documents
+    skipped = 0
+
+    # Create a list to store skipped lines
+    skipped_lines = []
+
+    # Read CSV file in chunks
+    for chunk in pd.read_csv(file_path, delimiter=delimiter, chunksize=chunk_size):
+        for index, row in chunk.iterrows():
+            try:
+                # Transform CSV data to match the base schema
+                record = transform_csv_data(row)
+
+                # Update additional fields
+                record['source'] = source_name
+                record['breach_date'] = breach_date
+
+                documents.append(record)
+            except Exception as e:
+                skipped += 1
+                skipped_lines.append(str(e))
+
+        # Check if the number of documents reaches the chunk size
+        if len(documents) == chunk_size:
+            print('Inserting chunk...')
+            collection.insert_many(documents)
+            documents = []  # Reset the documents list
+
+    # Insert the remaining documents (if any) after processing all rows
+    if documents:
+        print('Inserting remaining documents...')
+        collection.insert_many(documents)
+
+    print('Processed', file_path)
+    print('Skipped', skipped)
+
+    # Write skipped lines to a separate file
+    if skipped_lines:
+        output_folder = 'SkippedLines'
+        if not os.path.exists(output_folder):
+            os.makedirs(output_folder)
+
+        file_name = os.path.basename(file_path)
+        new_file_path = os.path.join(output_folder, f'unexpected_{file_name}')
+        with open(new_file_path, 'w', encoding='utf-8') as saved_lines_file:
+            saved_lines_file.write('\n'.join(skipped_lines))
+
+
+# Prompt user for CSV file path
+csv_file_path = input("Enter the CSV file path: ")
+
+# Prompt user for delimiter for CSV file
+delimiter = input("Enter the delimiter for CSV file (default is ','): ")
+if not delimiter:
+    delimiter = ","
+
+# Prompt user for breach date
+breach_date = input("Enter the breach date: ")
+
+# Prompt user for source name
+source_name = input("Enter the source name: ")
+
+# Set chunk size based on available memory and CSV file size
+chunk_size = 10000  # Adjust as needed
+
+# Process the CSV file
+process_csv(csv_file_path, delimiter, breach_date, source_name, chunk_size)
+
+# Disconnect from MongoDB
+client.close()
+print('Done!')
