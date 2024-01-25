@@ -1,0 +1,577 @@
+# for txt using from fuzzywuzzy import fuzz
+import pandas as pd
+import os
+import json
+import requests
+import time
+import Levenshtein
+from pymongo import MongoClient
+from datetime import datetime
+import re  # Import the regular expression module
+from fuzzywuzzy import fuzz  # Import fuzzywuzzy for fuzzy pattern matching
+
+# Connect to MongoDB
+client = MongoClient('mongodb://localhost:27017/')
+db = client['Database_Leaks1']
+collection = db['2,844 Separate Data Breaches']
+
+# Define the enhanced base schema with additional fields
+base_obj = {
+    "id": "",
+    "username": "",
+    "email": "",
+    "password": "",
+    "password_hash": "",
+    "name": "",
+    "dob": "",
+    "phone": "",
+    "address": "",
+    "source": "",
+    "breach_date": "",
+    "domainName": "",
+    "others": ""  # Additional fields
+}
+
+chunk_size = 5000
+max_file_size = 200 * 1024 * 1024  # 200 MB in bytes
+max_documents_per_collection = 10000000  # Set the maximum number of documents per collection
+
+def determine_data_pattern_fuzzy(line):
+    # Check if the line matches the email:password pattern using fuzzy logic
+    if fuzz.partial_ratio(line, 'email:password') >= 90:
+        return 'email_password'
+
+    # Check if the line matches the email, password pattern using fuzzy logic
+    elif fuzz.partial_ratio(line, 'email, password') >= 90:
+        return 'email_only'
+
+    # If no pattern is matched, return 'unknown'
+    return 'unknown'
+    
+# Function to process a single CSV file
+def process_csv(file_path, delimiter, pattern, chunk_size):
+    # Implement your CSV processing logic here
+    pass
+
+# Function to process a single JSON file
+def process_json(file_path, pattern, chunk_size):
+    # Implement your JSON processing logic here
+    pass
+
+# Function to process a single SQL file
+def process_sql(file_path, pattern):
+    # Implement your SQL processing logic here
+    pass
+
+
+# Function to process a single TXT file with dynamic fuzzy pattern recognition for additional fields
+def process_txt_file_dynamic_enhanced(file_path, chunk_size, breach_date, source_name):
+    # Determine the data pattern in the file using fuzzy logic
+    data_pattern = determine_data_pattern_fuzzy(file_path)
+
+    if data_pattern == 'email_password':
+        pattern = re.compile(r'([^,\s]+)\s*:\s*([^,\s]+)')  # Pattern for email with password
+        process_txt_file_enhanced(file_path, pattern, chunk_size, breach_date, source_name)
+    elif data_pattern == 'email_only':
+        pattern = re.compile(r'([^,\s]+)\s*,\s*([^,\s]+)')  # Pattern for email-only
+        process_txt_file_enhanced(file_path, pattern, chunk_size, breach_date, source_name)
+    else:
+        print(f"Unknown data pattern in file: {file_path}")
+
+# Function to process a single TXT file with dynamic pattern recognition for additional fields
+def process_txt_file_enhanced(file_path, pattern, chunk_size, breach_date, source_name):
+    documents = []  # List to store documents
+    skipped = 0
+
+    # Create a list to store skipped lines
+    skipped_lines = []
+
+    with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
+        print('Processing', file_path)
+        cnt = 0
+        chunk_count = 0  # Initialize chunk count
+        for line in file:
+            cnt = cnt + 1
+            line = line.strip()
+            if pattern:
+                match = pattern.match(line)
+                if match:
+                    groups = match.groups()
+                    if len(groups) > 0:
+                        email = groups[0]
+                        domain_name = email.split('@')[-1]
+
+                        # Create a new record based on the enhanced base schema
+                        record = base_obj.copy()
+                        record['email'] = email
+                        if len(groups) > 1:
+                            password = groups[1]
+                            if len(password) >= 16:
+                                record['password_hash'] = password
+                            else:
+                                record['password'] = password
+                        record['source'] = source_name
+                        record['domainName'] = domain_name
+                        record['breach_date'] = breach_date
+
+                        # Additional fields (update based on your actual schema)
+                        record['username'] = ""  # Extract username if available
+                        record['name'] = ""  # Extract name if available
+                        record['dob'] = ""  # Extract date of birth if available
+                        record['phone'] = ""  # Extract phone if available
+                        record['address'] = ""  # Extract address if available
+                        record['others'] = ""  # Extract other data if available
+
+                        documents.append(record)
+                else:
+                    skipped += 1
+                    skipped_lines.append(line)
+
+            # Check if the number of documents reaches the chunk size
+            if len(documents) == chunk_size:
+                chunk_count += 1  # Increment chunk count
+                print('Inserting chunk', chunk_count)
+                collection.insert_many(documents)
+                print('Inserted:', cnt)
+                documents = []  # Reset the documents list
+
+        # Insert the remaining documents (if any) after processing all lines
+        if documents:
+            chunk_count += 1  # Increment chunk count
+            print('Inserting chunk', chunk_count)
+            collection.insert_many(documents)
+            print('Inserted:', cnt)
+
+    print('Processed', file_path)
+    print('Skipped', skipped)
+
+    # Write skipped lines to a separate file
+    if skipped_lines:
+        output_folder = 'SkippedLines'
+        if not os.path.exists(output_folder):
+            os.makedirs(output_folder)
+
+        file_name = os.path.basename(file_path)
+        new_file_path = os.path.join(output_folder, f'unexpected_{file_name}')
+        with open(new_file_path, 'w', encoding='utf-8') as saved_lines_file:
+            saved_lines_file.write('\n'.join(skipped_lines))
+
+# Function to process a single file based on its extension
+def process_file(file_path, delimiter, pattern, chunk_size, breach_date, source_name, process_txt_file):
+    # Determine the file type based on the extension
+    file_extension = os.path.splitext(file_path)[1].lower()
+
+    # Check if the file size exceeds the maximum allowed
+    if os.path.getsize(file_path) > max_file_size:
+        split_and_process_large_file(file_path, delimiter, pattern, chunk_size, breach_date, source_name)
+    else:
+        if file_extension == '.csv':
+            # Process CSV file
+            process_csv(file_path, delimiter, pattern, chunk_size)
+        elif file_extension == '.json':
+            # Process JSON file
+            process_json(file_path, pattern, chunk_size)
+        elif file_extension == '.sql':
+            # Process SQL file
+            process_sql(file_path, pattern)
+        elif file_extension == '.txt':
+            # Process TXT file
+            process_txt_file(file_path, delimiter, pattern, chunk_size, breach_date, source_name)
+        else:
+            print(f"Unsupported file type: {file_extension}")
+
+# Function to insert documents into MongoDB and create new collections if needed
+def insert_into_mongodb(documents, chunk_count, breach_date, source_name):
+    current_collection = get_collection_name(chunk_count, breach_date, source_name)
+    collection = db[current_collection]
+    collection.insert_many(documents)
+    print(f'Inserted into collection: {current_collection}, Documents: {len(documents)}')
+
+# Function to get the current collection name based on chunk count, breach date, and source name
+def get_collection_name(chunk_count, breach_date, source_name):
+    return f'{source_name}_{breach_date}_chunk{chunk_count}'
+
+# Function to split a large file into chunks and process each chunk
+def split_and_process_large_file(file_path, delimiter, pattern, chunk_size, breach_date, source_name):
+    with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
+        chunk_count = 0
+        documents = []
+
+        for line in file:
+            if delimiter in line:
+                email, password = line.split(delimiter, 1)
+                domain_name = email.split('@')[-1]
+
+                record = base_obj.copy()
+                record['email'] = email
+                if len(password) >= 16:
+                    record['password_hash'] = password
+                else:
+                    record['password'] = password
+                record['source'] = source_name
+                record['domainName'] = domain_name
+                record['breach_date'] = breach_date
+
+                documents.append(record)
+
+            # Check if the number of documents reaches the chunk size
+            if len(documents) == chunk_size:
+                chunk_count += 1
+                insert_into_mongodb(documents, chunk_count, breach_date, source_name)
+                documents = []
+
+        # Insert the remaining documents (if any) after processing all lines
+        if documents:
+            chunk_count += 1
+            insert_into_mongodb(documents, chunk_count, breach_date, source_name)
+
+# Prompt user for delimiter for text files
+
+# Prompt user for delimiter for text files
+delimiter = input("Enter the delimiter for text files (default is ':'): ")
+if not delimiter:
+    delimiter = ":"
+
+# Use fuzzy logic for pattern recognition
+use_fuzzy_logic = input("Use fuzzy logic for pattern recognition? (yes/no): ").lower() == 'yes'
+
+# Prompt user for folder or file path
+path = input("Enter the file or folder path: ")
+
+# Check if the path is a directory
+if os.path.isdir(path):
+    # Rename files in the folder
+    file_list = os.listdir(path)
+    file_list.sort()  # Sort the list of files
+
+    for i, filename in enumerate(file_list):
+        new_filename = f"{i}{os.path.splitext(filename)[1]}"  # Keep the file extension
+        new_filepath = os.path.join(path, new_filename)
+        old_filepath = os.path.join(path, filename)
+
+        try:
+            os.rename(old_filepath, new_filepath)
+            print(f'Renamed "{filename}" to "{new_filename}"')
+        except Exception as e:
+            print(f'Error renaming "{filename}": {e}')
+
+    # Get the current date
+    current_date = datetime.now().strftime('%Y-%m-%d')
+
+    # Prompt user for breach date
+    breach_date = input(f"Enter the breach date (default is '{current_date}'): ") or current_date
+
+    # Prompt user for source name
+    source_name = input("Enter the source name: ")
+
+    # Iterate over files in the directory
+    for filename in os.listdir(path):
+        file_path = os.path.join(path, filename)
+        
+        if use_fuzzy_logic:
+            process_txt_file_dynamic_enhanced(file_path, chunk_size, breach_date, source_name)
+        else:
+            process_file(file_path, delimiter, source_name, chunk_size, breach_date, source_name)
+else:
+    # Get the current date
+    current_date = datetime.now().strftime('%Y-%m-%d')
+
+    # Prompt user for breach date
+    breach_date = input(f"Enter the breach date (default is '{current_date}'): ") or current_date
+
+    # Prompt user for source name
+    source_name = input("Enter the source name: ")
+
+    # Process a single file
+    if use_fuzzy_logic:
+        process_txt_file_dynamic_enhanced(path, chunk_size, breach_date, source_name)
+    else:
+        process_file(path, delimiter, source_name, chunk_size, breach_date, source_name)
+
+# Disconnect from MongoDB
+client.close()
+print('Done!')
+
+
+
+
+
+
+
+
+
+#  for txt using from fuzzywuzzy import fuzz, Process
+
+import os
+import json
+import pandas as pd
+from pymongo import MongoClient
+from datetime import datetime
+from fuzzywuzzy import fuzz, process
+
+# Connect to MongoDB
+client = MongoClient('mongodb://localhost:27017/')
+db = client['Database_Leaks1']
+collection = db['2,844 Separate Data Breaches']
+
+# Define the enhanced base schema with additional fields
+base_obj = {
+    "id": "",
+    "username": "",
+    "email": "",
+    "password": "",
+    "password_hash": "",
+    "name": "",
+    "dob": "",
+    "phone": "",
+    "address": "",
+    "source": "",
+    "breach_date": "",
+    "domainName": "",
+    "others": ""  # Additional fields
+}
+
+chunk_size = 5000
+max_file_size = 200 * 1024 * 1024  # 200 MB in bytes
+max_documents_per_collection = 10000000  # Set the maximum number of documents per collection
+
+# Function to determine field using fuzzy logic
+def determine_field_fuzzy(line):
+    field_options = ["id", "username", "email", "password", "password_hash", "name", "dob", "phone", "address", "others"]
+    ratios = process.extractOne(line, field_options, scorer=fuzz.partial_ratio)
+    
+    if ratios[1] >= 80:  # Adjust the threshold as needed
+        return ratios[0]
+    else:
+        return "unknown"
+
+# Function to process a single CSV file
+def process_csv(file_path, delimiter, pattern, chunk_size):
+    # Implement your CSV processing logic here
+    pass
+
+# Function to process a single JSON file
+def process_json(file_path, pattern, chunk_size):
+    # Implement your JSON processing logic here
+    pass
+
+# Function to process a single SQL file
+def process_sql(file_path, pattern):
+    # Implement your SQL processing logic here
+    pass
+
+
+
+# Function to process a single TXT file with dynamic fuzzy pattern recognition for additional fields
+def process_txt_file_dynamic_enhanced(file_path, chunk_size, breach_date, source_name, delimiter=':'):
+    # Create a dynamic schema based on the provided base_obj
+    dynamic_schema = base_obj.copy()
+
+    documents = []  # List to store documents
+    skipped = 0
+
+    # Create a list to store skipped lines
+    skipped_lines = []
+
+    with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
+        print('Processing', file_path)
+        cnt = 0
+        chunk_count = 0  # Initialize chunk count
+        for line in file:
+            cnt = cnt + 1
+            line = line.strip()
+
+            # Determine the field using fuzzy logic
+            field = determine_field_fuzzy(line)
+
+            if field != "unknown":
+                # Create a new record based on the dynamic schema
+                record = dynamic_schema.copy()
+                record['source'] = source_name
+                record['breach_date'] = breach_date
+
+                # Use dynamic pattern recognition to extract relevant data
+                key_value_pairs = [tuple(part.strip() for part in pair.split(delimiter, 1)) for pair in line.split(',')]
+
+                # Check if the key-value pairs are present
+                if all(len(pair) == 2 for pair in key_value_pairs):
+                    for key, value in key_value_pairs:
+                        # Check if the key is present in the dynamic schema
+                        if key in dynamic_schema:
+                            record[key] = value
+                        else:
+                            record['others'] += f"{key}: {value}\n"
+
+                    documents.append(record)
+                else:
+                    skipped += 1
+                    skipped_lines.append(line)
+            else:
+                skipped += 1
+                skipped_lines.append(line)
+
+            # Check if the number of documents reaches the chunk size
+            if len(documents) == chunk_size:
+                chunk_count += 1  # Increment chunk count
+                print('Inserting chunk', chunk_count)
+                collection.insert_many(documents)
+                print('Inserted:', cnt)
+                documents = []  # Reset the documents list
+
+        # Insert the remaining documents (if any) after processing all lines
+        if documents:
+            chunk_count += 1  # Increment chunk count
+            print('Inserting chunk', chunk_count)
+            collection.insert_many(documents)
+            print('Inserted:', cnt)
+
+    print('Processed', file_path)
+    print('Skipped', skipped)
+
+    # Write skipped lines to a separate file
+    if skipped_lines:
+        output_folder = 'SkippedLines'
+        if not os.path.exists(output_folder):
+            os.makedirs(output_folder)
+
+        file_name = os.path.basename(file_path)
+        new_file_path = os.path.join(output_folder, f'unexpected_{file_name}')
+        with open(new_file_path, 'w', encoding='utf-8') as saved_lines_file:
+            saved_lines_file.write('\n'.join(skipped_lines))
+
+
+# Function to process a single file based on its extension
+def process_file(file_path, delimiter, pattern, chunk_size, breach_date, source_name, process_txt_file):
+    # Determine the file type based on the extension
+    file_extension = os.path.splitext(file_path)[1].lower()
+
+    # Check if the file size exceeds the maximum allowed
+    if os.path.getsize(file_path) > max_file_size:
+        split_and_process_large_file(file_path, delimiter, pattern, chunk_size, breach_date, source_name)
+    else:
+        if file_extension == '.csv':
+            # Process CSV file
+            process_csv(file_path, delimiter, pattern, chunk_size)
+        elif file_extension == '.json':
+            # Process JSON file
+            process_json(file_path, pattern, chunk_size)
+        elif file_extension == '.sql':
+            # Process SQL file
+            process_sql(file_path, pattern)
+        elif file_extension == '.txt':
+            # Process TXT file
+            process_txt_file(file_path, delimiter, pattern, chunk_size, breach_date, source_name)
+        else:
+            print(f"Unsupported file type: {file_extension}")
+
+# Function to insert documents into MongoDB and create new collections if needed
+def insert_into_mongodb(documents, chunk_count, breach_date, source_name):
+    current_collection = get_collection_name(chunk_count, breach_date, source_name)
+    collection = db[current_collection]
+    collection.insert_many(documents)
+    print(f'Inserted into collection: {current_collection}, Documents: {len(documents)}')
+
+# Function to get the current collection name based on chunk count, breach date, and source name
+def get_collection_name(chunk_count, breach_date, source_name):
+    return f'{source_name}_{breach_date}_chunk{chunk_count}'
+
+# Function to split a large file into chunks and process each chunk
+def split_and_process_large_file(file_path, delimiter, pattern, chunk_size, breach_date, source_name):
+    with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
+        chunk_count = 0
+        documents = []
+
+        for line in file:
+            if delimiter in line:
+                email, password = line.split(delimiter, 1)
+                domain_name = email.split('@')[-1]
+
+                record = base_obj.copy()
+                record['email'] = email
+                if len(password) >= 16:
+                    record['password_hash'] = password
+                else:
+                    record['password'] = password
+                record['source'] = source_name
+                record['domainName'] = domain_name
+                record['breach_date'] = breach_date
+
+                documents.append(record)
+
+            # Check if the number of documents reaches the chunk size
+            if len(documents) == chunk_size:
+                chunk_count += 1
+                insert_into_mongodb(documents, chunk_count, breach_date, source_name)
+                documents = []
+
+        # Insert the remaining documents (if any) after processing all lines
+        if documents:
+            chunk_count += 1
+            insert_into_mongodb(documents, chunk_count, breach_date, source_name)
+
+
+# Prompt user for delimiter for text files
+delimiter = input("Enter the delimiter for text files (default is ':'): ") or ":"
+if not delimiter:
+    delimiter = ":"
+
+# Use fuzzy logic for pattern recognition
+use_fuzzy_logic = input("Use fuzzy logic for pattern recognition? (yes/no): ").lower() == 'yes'
+
+# Prompt user for folder or file path
+path = input("Enter the file or folder path: ")
+
+# Check if the path is a directory
+if os.path.isdir(path):
+    # Rename files in the folder
+    file_list = os.listdir(path)
+    file_list.sort()  # Sort the list of files
+
+    for i, filename in enumerate(file_list):
+        new_filename = f"{i}{os.path.splitext(filename)[1]}"  # Keep the file extension
+        new_filepath = os.path.join(path, new_filename)
+        old_filepath = os.path.join(path, filename)
+
+        try:
+            os.rename(old_filepath, new_filepath)
+            print(f'Renamed "{filename}" to "{new_filename}"')
+        except Exception as e:
+            print(f'Error renaming "{filename}": {e}')
+
+    # Get the current date
+    current_date = datetime.now().strftime('%Y-%m-%d')
+
+    # Prompt user for breach date
+    breach_date = input(f"Enter the breach date (default is '{current_date}'): ") or current_date
+
+    # Prompt user for source name
+    source_name = input("Enter the source name: ")
+
+    # Iterate over files in the directory
+    
+    for filename in os.listdir(path):
+        file_path = os.path.join(path, filename)
+
+        if use_fuzzy_logic:
+            process_txt_file_dynamic_enhanced(file_path, chunk_size, breach_date, source_name, delimiter)
+        else:
+            process_file(file_path, delimiter, source_name, chunk_size, breach_date, source_name)
+else:
+    # Get the current date
+    current_date = datetime.now().strftime('%Y-%m-%d')
+
+    # Prompt user for breach date
+    breach_date = input(f"Enter the breach date (default is '{current_date}'): ") or current_date
+
+    # Prompt user for source name
+    source_name = input("Enter the source name: ")
+
+    # Process a single file
+    if use_fuzzy_logic:
+        process_txt_file_dynamic_enhanced(path, chunk_size, breach_date, source_name)
+    else:
+        process_file(path, delimiter, source_name, chunk_size, breach_date, source_name)
+
+# Disconnect from MongoDB
+client.close()
+print('Done!')
