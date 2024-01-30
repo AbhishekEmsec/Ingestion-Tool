@@ -1,16 +1,16 @@
-# this is old code using delimiter
-import pandas as pd
 import os
-import json
-import requests
-import time
+import pandas as pd
 from pymongo import MongoClient
 from datetime import datetime
+import phonenumbers
+from validate_email_address import validate_email
+from fuzzywuzzy import fuzz
+import json
 
 # Connect to MongoDB
 client = MongoClient('mongodb://localhost:27017/')
 db = client['Database_Leaks']
-collection = db['2,844 Separate Data Breaches3']
+collection = db['2,844 Separate Data Breaches11']
 
 # Define the base schema
 base_obj = {
@@ -24,35 +24,195 @@ base_obj = {
     "phone": "",
     "address": "",
     "source": "",
-    "breach_date": "",
     "domainName": "",
+    "breach_date": "",
     "others": ""
 }
 
-chunk_size = 5000
+chunk_size = 5000000
 max_file_size = 200 * 1024 * 1024  # 200 MB in bytes
 
-# Function to process a single CSV file
-def process_csv(file_path, delimiter, pattern, chunk_size):
-    # Implement your CSV processing logic here
-    pass
+# Reference code for mapping
+email_reference = ["email", "email_address", "email_id", "emailId", "contact_email"]
+phone_reference = ["phone", "phone_no", "phone_number", "ph_no", "contact_number"]
+password_reference = ["password", "pass", "passhash", "secret", "psw", "passwrd"]
+username_reference = ["username", "firstname", "lastname", "name", "user_name", "first_name", "last_name", "f_name", "l_name", "fname", "lname"]
 
-# Function to process a single JSON file
-def process_json(file_path, pattern, chunk_size):
-    # Implement your JSON processing logic here
-    pass
+# Update transform_csv_data function
+def transform_csv_data(row):
+    return {
+        "id": str(row.get('id', '')),
+        "username": map_to_reference(row.get('username', ''), username_reference),
+        "email": map_to_reference(row.get('email', ''), email_reference),
+        "password": map_to_reference(row.get('password', ''), password_reference),
+        "password_hash": map_to_reference(row.get('password_hash', ''), password_reference),
+        "name": "",
+        "dob": "",
+        "phone": map_to_reference(row.get('phone', ''), phone_reference),
+        "address": str(row.get('address', '')),
+        "source": "",
+        "breach_date": "",
+        "domainName": "",
+        "others": ""
+    }
+
+# Add map_to_reference function
+def map_to_reference(value, reference_list):
+    for ref in reference_list:
+        if fuzz.ratio(value, ref) > 80:  # Adjust the threshold as needed
+            return value
+    return ""
+
+# Function to process a single CSV file
+def process_csv(file_path, delimiter, breach_date, source_name, chunk_size):
+    documents = []  # List to store documents
+    skipped = 0
+    skipped_lines = []
+
+    for chunk in pd.read_csv(file_path, delimiter=delimiter, chunksize=chunk_size):
+        for index, row in chunk.iterrows():
+            try:
+                record = transform_csv_data(row)
+                record['source'] = source_name
+                record['breach_date'] = breach_date
+                documents.append(record)
+            except Exception as e:
+                skipped += 1
+                skipped_lines.append(str(e))
+
+        if len(documents) == chunk_size:
+            print('Inserting chunk...')
+            collection.insert_many(documents)
+            documents = []
+
+    if documents:
+        print('Inserting remaining documents...')
+        collection.insert_many(documents)
+
+    print('Processed', file_path)
+    print('Skipped', skipped)
+
+    if skipped_lines:
+        output_folder = 'SkippedLines'
+        if not os.path.exists(output_folder):
+            os.makedirs(output_folder)
+
+        file_name = os.path.basename(file_path)
+        new_file_path = os.path.join(output_folder, f'unexpected_{file_name}')
+        with open(new_file_path, 'w', encoding='utf-8') as saved_lines_file:
+            saved_lines_file.write('\n'.join(skipped_lines))
 
 # Function to process a single SQL file
-def process_sql(file_path, pattern):
-    # Implement your SQL processing logic here
-    pass
+def process_sql(file_path, pattern, chunk_size, breach_date, source_name, insert_users, ):
+    with open(file_path, 'r', encoding='latin-1') as file:
+        users = []
+        email_position = 0
+        password_position = 0
+        flag = False
+        cnt = -1
+        email = ''
+        password = ''
+        tablename = ''
+
+        for line in file:
+            arr = line.split('(')
+
+            if arr:
+                get_table = line.split('(')[0]
+                table = get_table.split(' ')
+
+                if "CREATE TABLE" in get_table:
+                    tablename = get_table.split(' ')[2].strip()
+                    flag = True
+
+                if flag and cnt < 20:
+                    if "email" in line and email_position == 0:
+                        email_position = cnt
+
+                    if "password" in line and password_position == 0:
+                        password_position = cnt
+
+                    cnt += 1
+
+                if arr is not None and tablename in get_table:
+                    new_arr = arr[1].split(',') if len(arr) > 1 else []
+                else:
+                    if arr is not None and flag:
+                        new_arr = arr[1].split(',') if len(arr) > 1 else []
+
+                if new_arr:
+                    for i in new_arr:
+                        mapped_email = map_to_reference(i, email_reference)
+                        if mapped_email:
+                            print("email-address", mapped_email)
+
+                        try:
+                            phone_number = phonenumbers.parse(i, None)
+                        except Exception as e:
+                            continue
+
+                        mapped_phone = map_to_reference(i, phone_reference)
+                        if phonenumbers.is_valid_number(phone_number) or mapped_phone:
+                            print(i)
+
+                        if flag:
+                            email = new_arr[email_position].strip() if len(new_arr) > email_position else None
+                            password = new_arr[password_position].strip() if len(new_arr) > password_position else None
+
+                            if email and '@' in email:
+                                domain_name = email.split('@')[1]
+                            else:
+                                continue
+                            mapped_password = map_to_reference(password, password_reference)
+
+                            record = {
+                                "id": "",
+                                "username": "",
+                                "email": mapped_email,
+                                "password": mapped_password if mapped_password and len(mapped_password) < 16 else "",
+                                "password_hash": mapped_password if mapped_password and len(mapped_password) > 16 else "",
+                                "name": "",
+                                "dob": "",
+                                "phone": mapped_phone,
+                                "address": "",
+                                "source": source_name,
+                                "domainName": domain_name,
+                                "breach_date": breach_date,
+                                "others": "",
+                            }
+
+                            users.append(record)
+
+                            if len(users) >= chunk_size:
+                                insert_users(users)
+                                users.clear()
+
+        if users:
+            insert_users(users)
+            print('User data inserted successfully.')
+        else:
+            print('No user data found in the file.')
+
+# Function to process a single JSON file
+def process_json_file(file_path, chunk_size, breach_date, source_name, find_emails_and_passwords, insert_users):
+    with open(file_path, 'r', encoding='utf-8') as json_file:
+        json_data = json.load(json_file)
+
+    users = find_emails_and_passwords(json_data)
+
+    for user in users:
+        user['source'] = source_name
+        user['breach_date'] = breach_date
+
+    insert_users(users)
+
+    print('Processed', file_path)
+    print('Inserted', len(users), 'documents.')
 
 # Function to process a single TXT file
 def process_txt_file(file_path, delimiter, pattern, chunk_size, breach_date, source_name):
     documents = []  # List to store documents
     skipped = 0
-
-    # Create a list to store skipped lines
     skipped_lines = []
 
     with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
@@ -66,7 +226,6 @@ def process_txt_file(file_path, delimiter, pattern, chunk_size, breach_date, sou
                 email, password = line.split(delimiter, 1)  # Split based on the specified delimiter
                 domain_name = email.split('@')[-1]  # Extract domain name from email
 
-                # Create a new record based on the base schema
                 record = base_obj.copy()
                 record['email'] = email
                 if len(password) >= 16:
@@ -82,20 +241,14 @@ def process_txt_file(file_path, delimiter, pattern, chunk_size, breach_date, sou
                 skipped += 1
                 skipped_lines.append(line)
 
-            # Check if the number of documents reaches the chunk size
             if len(documents) == chunk_size:
                 chunk_count += 1  # Increment chunk count
-                print('Inserting chunk', chunk_count)
-                collection.insert_many(documents)
-                print('Inserted:', cnt)
+                insert_into_mongodb(documents, chunk_count, breach_date, source_name)
                 documents = []  # Reset the documents list
 
-        # Insert the remaining documents (if any) after processing all lines
         if documents:
             chunk_count += 1  # Increment chunk count
-            print('Inserting chunk', chunk_count)
-            collection.insert_many(documents)
-            print('Inserted:', cnt)
+            insert_into_mongodb(documents, chunk_count, breach_date, source_name)
 
     print('Processed', file_path)
     print('Skipped', skipped)
@@ -122,18 +275,29 @@ def process_file(file_path, delimiter, pattern, chunk_size, breach_date, source_
     else:
         if file_extension == '.csv':
             # Process CSV file
-            process_csv(file_path, delimiter, pattern, chunk_size)
+            process_csv(file_path, delimiter, breach_date, source_name, chunk_size)
         elif file_extension == '.json':
             # Process JSON file
-            process_json(file_path, pattern, chunk_size)
+            process_json_file(file_path, chunk_size, breach_date, source_name)
         elif file_extension == '.sql':
             # Process SQL file
-            process_sql(file_path, pattern)
+            process_sql(file_path, pattern, chunk_size, breach_date, source_name, insert_into_mongodb)
         elif file_extension == '.txt':
             # Process TXT file
             process_txt_file(file_path, delimiter, pattern, chunk_size, breach_date, source_name)
         else:
             print(f"Unsupported file type: {file_extension}")
+
+# Function to insert documents into MongoDB and create new collections if needed
+def insert_into_mongodb(documents, chunk_count, breach_date, source_name):
+    current_collection = get_collection_name(chunk_count, breach_date, source_name)
+    collection = db[current_collection]
+    collection.insert_many(documents)
+    print(f'Inserted into collection: {current_collection}, Documents: {len(documents)}')
+
+# Function to get the current collection name based on chunk count, breach date, and source name
+def get_collection_name(chunk_count, breach_date, source_name):
+    return f'{source_name}_{breach_date}_chunk{chunk_count}'
 
 # Function to split a large file into chunks and process each chunk
 def split_and_process_large_file(file_path, delimiter, pattern, chunk_size, breach_date, source_name):
@@ -158,18 +322,18 @@ def split_and_process_large_file(file_path, delimiter, pattern, chunk_size, brea
 
                 documents.append(record)
 
-            # Check if the number of documents reaches the chunk size
             if len(documents) == chunk_size:
                 chunk_count += 1
-                print(f'Inserting chunk {chunk_count} for large file')
-                collection.insert_many(documents)
+                insert_into_mongodb(documents, chunk_count, breach_date, source_name)
                 documents = []
 
-        # Insert the remaining documents (if any) after processing all lines
         if documents:
             chunk_count += 1
-            print(f'Inserting chunk {chunk_count} for large file')
-            collection.insert_many(documents)
+            insert_into_mongodb(documents, chunk_count, breach_date, source_name)
+
+# Function to check if an email address is valid
+def is_valid_email(email):
+    return validate_email(email)
 
 # Prompt user for delimiter for text files
 delimiter = input("Enter the delimiter for text files (default is ':'): ")
@@ -181,21 +345,6 @@ path = input("Enter the file or folder path: ")
 
 # Check if the path is a directory
 if os.path.isdir(path):
-    # Rename files in the folder
-    file_list = os.listdir(path)
-    file_list.sort()  # Sort the list of files
-
-    for i, filename in enumerate(file_list):
-        new_filename = f"{i}{os.path.splitext(filename)[1]}"  # Keep the file extension
-        new_filepath = os.path.join(path, new_filename)
-        old_filepath = os.path.join(path, filename)
-        
-        try:
-            os.rename(old_filepath, new_filepath)
-            print(f'Renamed "{filename}" to "{new_filename}"')
-        except Exception as e:
-            print(f'Error renaming "{filename}": {e}')
-
     # Get the current date
     current_date = datetime.now().strftime('%Y-%m-%d')
 
